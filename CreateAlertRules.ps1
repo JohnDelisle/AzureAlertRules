@@ -2,20 +2,22 @@
 
 [CmdletBinding()]
 param (
-    # these affect where the Action Group is created, and where the Activity Log Alerts are created
-    [Parameter(Mandatory = $true)][string]$agSubscriptionId,
-    [Parameter(Mandatory = $true)][string]$agResourceGroupName,
-    [Parameter(Mandatory = $true)][string]$agName,
+    # These affect where the Action Group is created and where the Activity Log Alerts are created
     [Parameter(Mandatory = $true)][string]$agShortName,
-    [Parameter(Mandatory = $true)][string[]]$agEmails
+    [Parameter(Mandatory = $true)][string[]]$agEmails,
+    [Parameter(Mandatory = $true)][string]$rgLocation,
+    [Parameter(Mandatory = $false)][hashtable]$tags
 )
 
-# list of policies and their operation names we need to create Alert Rules for
+$ErrorActionPreference = 'Stop'
+
+# List of policies and their operation names for which we need to create Alert Rules
 $alertRules = @(
     [PSCustomObject]@{
-        PolicyName = "An activity log alert should exist for specific Administrative operations"
+        PolicyName         = "An activity log alert should exist for specific Administrative operations"
         PolicyDefinitionId = "b954148f-4c11-4c38-8221-be76711e194a"
-        OperationNames = @(
+        Category           = "Administrative"
+        OperationNames     = @(
             "Microsoft.Sql/servers/firewallRules/write",
             "Microsoft.Sql/servers/firewallRules/delete",
             "Microsoft.Network/networkSecurityGroups/write",
@@ -29,18 +31,19 @@ $alertRules = @(
         )
     },
     [PSCustomObject]@{
-        PolicyName = "An activity log alert should exist for specific Policy operations"
+        PolicyName         = "An activity log alert should exist for specific Policy operations"
         PolicyDefinitionId = "c5447c04-a4d7-4ba8-a263-c9ee321a6858"
-        OperationNames = @(
+        Category           = "Administrative"
+        OperationNames     = @(
             "Microsoft.Authorization/policyAssignments/write",
             "Microsoft.Authorization/policyAssignments/delete"
         )
-
     },
     [PSCustomObject]@{
-        PolicyName = "An activity log alert should exist for specific Security operations"
+        PolicyName         = "An activity log alert should exist for specific Security operations"
         PolicyDefinitionId = "3b980d31-7904-4bb7-8575-5665739a8052"
-        OperationNames = @(
+        Category           = "Security"
+        OperationNames     = @(
             "Microsoft.Security/policies/write",
             "Microsoft.Security/securitySolutions/write",
             "Microsoft.Security/securitySolutions/delete"
@@ -48,40 +51,45 @@ $alertRules = @(
     }
 )
 
-
-#############################
-###### create Action Group
-#############################
-
-# AG receivers
-$agEmailReceivers = @()
-foreach ($email in $agEmails) {
-    $agEmailReceivers += New-AzActionGroupReceiver -Name $email.split('@')[-1] -EmailReceiver -EmailAddress $email
-}
-
-# create/ update the AG
-Select-AzSubscription $agSubscriptionId | Out-Null
-$ag = Set-AzActionGroup -Name $agName -ResourceGroup $agResourceGroupName -ShortName $agShortName -Receiver $agEmailReceivers
-
-
-
-#############################
-###### create Activity Log Alert for each sub
-#############################
-
+# Iterate through each subscription and create alerts
 foreach ($sub in Get-AzSubscription) {
+    $sub | Select-AzSubscription | Out-Null
+
+    # Get the "abc123" from "abc123 subscription name blah"
+    $subShortCode = $sub.Name.split(" ")[0]
+    $agResourceGroupName = "$($subShortCode.ToLower())-$($agShortName.ToLower())-rg"
+    $agName = "$($subShortCode.ToLower())-$($agShortName.ToLower())-ag"
+
+    Write-Output "Creating $agName in $agResourceGroupName"
+
+    # Create or update the resource group
+    $rg = New-AzResourceGroup -Name $agResourceGroupName -Location $rgLocation -Tag $tags -Force
+
+    # Create Action Group email receivers
+    $agEmailReceivers = @()
+    foreach ($email in $agEmails) {
+        $agEmailReceivers += New-AzActionGroupEmailReceiverObject -Name $email.split('@')[0] -EmailAddress $email
+    }
+
+    # Create or update the Action Group
+    $ag = New-AzActionGroup -Name $agName -ResourceGroup $agResourceGroupName -ShortName $agShortName -EmailReceiver $agEmailReceivers -Location Global -Tag $tags
+    $agObject = New-AzActivityLogAlertActionGroupObject -Id $ag.Id
+
+    # Create the Activity Log Alerts
     foreach ($alertRule in $alertRules) {
         $conditions = @()
-        # want to filter for Security category
-        $conditions += New-AzActivityLogAlertCondition -Field 'category' -Equal 'Security'
-        
-        # add each of the operation names needed for this alert rule
-        foreach ($operationName in $alertRule.OperationNames) {
-            $conditions += New-AzActivityLogAlertCondition -Field 'operationName' -Equal $operationName
-        }
+        $conditions += New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'category' -Equal $alertRule.Category
+        $conditions += New-AzActivityLogAlertAlertRuleAnyOfOrLeafConditionObject -AnyOf (
+                $alertRule.OperationNames | ForEach-Object { 
+                    New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'operationName' -Equal $_ 
+                }
+            )
 
-        $alertRuleName = "Compliance with $($alertRule.PolicyDefinitionId) on sub $($sub.Id)"
-        Set-AzActivityLogAlert -Location 'CanadaCentral' -Name $alertRuleName -ResourceGroupName $agResourceGroupName -Scope "/subscriptions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxxxxx/" -Action $ag.Id -Condition $conditions
+        $alertRuleName = "Compliance with $($alertRule.PolicyDefinitionId)"
+        New-AzActivityLogAlert -Location Global -Name $alertRuleName -ResourceGroupName $agResourceGroupName -Scope "/subscriptions/$($sub.Id)" -Action $agObject -Condition $conditions -Tag $tags
 
+        Write-Output "Created alert rule: $alertRuleName"
     }
 }
+
+Write-Output "Activity log alert rules created successfully."
