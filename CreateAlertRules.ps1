@@ -9,7 +9,7 @@ param (
     [Parameter(Mandatory = $false)][hashtable]$tags
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Inquire'
 
 # List of policies and their operation names for which we need to create Alert Rules
 $alertRules = @(
@@ -77,13 +77,17 @@ foreach ($sub in Get-AzSubscription) {
 
     # Create the Activity Log Alerts
     foreach ($alertRule in $alertRules) {
-        $conditions = @()
-        $conditions += New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'category' -Equal $alertRule.Category
-        $conditions += New-AzActivityLogAlertAlertRuleAnyOfOrLeafConditionObject -AnyOf (
-                $alertRule.OperationNames | ForEach-Object { 
-                    New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'operationName' -Equal $_ 
-                }
-            )
+        # Create the condition for the category
+        $categoryCondition = New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'category' -Equal $alertRule.Category
+        
+        # Create the anyOf condition for operation names
+        $operationNameConditions = $alertRule.OperationNames | ForEach-Object { 
+            New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'operationName' -Equal $_ 
+        }
+        $anyOfCondition = New-AzActivityLogAlertAlertRuleAnyOfOrLeafConditionObject -AnyOf $operationNameConditions
+
+        # Combine the conditions
+        $conditions = @($categoryCondition, $anyOfCondition)
 
         $alertRuleName = "Compliance with $($alertRule.PolicyDefinitionId)"
         New-AzActivityLogAlert -Location Global -Name $alertRuleName -ResourceGroupName $agResourceGroupName -Scope "/subscriptions/$($sub.Id)" -Action $agObject -Condition $conditions -Tag $tags
