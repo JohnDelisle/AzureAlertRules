@@ -77,23 +77,44 @@ foreach ($sub in Get-AzSubscription) {
 
     # Create the Activity Log Alerts
     foreach ($alertRule in $alertRules) {
-        # Create the condition for the category
-        $categoryCondition = New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'category' -Equal $alertRule.Category
-        
-        # Create the anyOf condition for operation names
-        $operationNameConditions = $alertRule.OperationNames | ForEach-Object { 
-            New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'operationName' -Equal $_ 
+        if ($alertRule.Category -eq "Administrative") {
+            foreach ($operationName in $alertRule.OperationNames) {
+                # Create the condition for the category
+                $categoryCondition = New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'category' -Equal $alertRule.Category
+
+                # Create the condition for the operation name
+                $operationNameCondition = New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'operationName' -Equal $operationName
+
+                # Combine the conditions
+                $conditions = @($categoryCondition, $operationNameCondition)
+
+                $alertRuleName = "$($alertRule.PolicyDefinitionId) - $($operationName.replace('/','-'))"
+                New-AzActivityLogAlert -Location Global -Name $alertRuleName -ResourceGroupName $agResourceGroupName -Scope "/subscriptions/$($sub.Id)" -Action $agObject -Condition $conditions -Tag $tags -Enabled $true
+
+                Write-Output "Created alert rule: $alertRuleName"
+            }
+        } else {
+            # Create the condition for the category
+            $categoryCondition = New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'category' -Equal $alertRule.Category
+
+            # Create the anyOf condition for operation names
+            $operationNameConditions = $alertRule.OperationNames | ForEach-Object { 
+                New-AzActivityLogAlertAlertRuleLeafConditionObject -Field 'operationName' -Equal $_ 
+            }
+            $anyOfCondition = New-AzActivityLogAlertAlertRuleAnyOfOrLeafConditionObject -AnyOf $operationNameConditions
+
+            # Combine the conditions
+            $conditions = @($categoryCondition, $anyOfCondition)
+
+            $alertRuleName = "$($alertRule.PolicyDefinitionId) - $($operationName.replace('/','-'))"
+            New-AzActivityLogAlert -Location Global -Name $alertRuleName -ResourceGroupName $agResourceGroupName -Scope "/subscriptions/$($sub.Id)" -Action $agObject -Condition $conditions -Tag $tags -Enabled $true
+
+            Write-Output "Created alert rule: $alertRuleName"
         }
-        $anyOfCondition = New-AzActivityLogAlertAlertRuleAnyOfOrLeafConditionObject -AnyOf $operationNameConditions
-
-        # Combine the conditions
-        $conditions = @($categoryCondition, $anyOfCondition)
-
-        $alertRuleName = "Compliance with $($alertRule.PolicyDefinitionId)"
-        New-AzActivityLogAlert -Location Global -Name $alertRuleName -ResourceGroupName $agResourceGroupName -Scope "/subscriptions/$($sub.Id)" -Action $agObject -Condition $conditions -Tag $tags
-
-        Write-Output "Created alert rule: $alertRuleName"
     }
 }
+
+
+
 
 Write-Output "Activity log alert rules created successfully."
